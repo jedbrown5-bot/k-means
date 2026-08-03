@@ -1,0 +1,36 @@
+# Week 9 game: The Clustering Loop, step by step
+
+An interactive Streamlit visualiser for the loop at the heart of ISODATA, built for
+the SPA317 / SPA442 Week 9 lecture (Unsupervised and Hybrid Classification).
+
+Students place the centres, then step through the two moves one at a time:
+
+1. **Assign** every point to its nearest centre (nearest centre wins).
+2. **Update** each centre to the middle of its points.
+
+and repeat until nothing changes (convergence). An **ISODATA** mode adds the split
+and merge moves, so the number of clusters adjusts itself.
+
+## Run it
+
+You have Anaconda already, so from a terminal (or the Anaconda Prompt):
+
+```
+pip install streamlit
+streamlit run Week9_kmeans_game.py
+```
+
+It opens in your browser. Nothing is uploaded; it runs entirely on your machine.
+
+## What to try in class
+
+- Step through one move at a time with **Next step**, reading the "What just happened" panel each time.
+- Set **K** above or below the number of covers to show over-clustering and under-clustering (ties to the "how many clusters" slide).
+- Switch **Dataset** to "Overlapping / tricky" to show where plain K-means struggles.
+- Turn on **ISODATA (split and merge)**, start with K set high (say 8 on the Coffs data), and watch the cluster count merge its way down to the natural number.
+- Switch **Colour points by** to "true cover" (Coffs dataset) to compare the machine's clusters against the real covers, which is the labelling step.
+
+## Files
+
+- `Week9_kmeans_game.py` — the app (single file; the clustering logic is pure functions at the top, the Streamlit UI below).
+- `requirements.txt` — dependencies.
