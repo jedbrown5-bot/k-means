@@ -16,11 +16,23 @@ and merge moves, so the number of clusters adjusts itself.
 You have Anaconda already, so from a terminal (or the Anaconda Prompt):
 
 ```
-pip install streamlit
+pip install streamlit streamlit-image-coordinates
 streamlit run Week9_kmeans_game.py
 ```
 
-It opens in your browser. Nothing is uploaded; it runs entirely on your machine.
+It opens in your browser. Nothing is uploaded; it runs entirely on your machine. The
+`streamlit-image-coordinates` package is optional: it enables the "Click to place" mode.
+Without it, the app still runs and "Type coordinates" placement still works.
+
+## Placing the centres
+
+Use the **Centre start** control in the sidebar:
+
+- **Random** — the machine drops the centres (k-means++ seeding).
+- **Click to place** — click anywhere in the feature-space box to drop each centre. Place at least two, then step.
+- **Type coordinates** — type or edit centre coordinates in a small table (no extra package needed).
+
+Placing the centres badly on purpose, then watching the loop still find the groups, is a good way to show that the result is robust to where the centres start.
 
 ## What to try in class
 

@@ -2,13 +2,18 @@
 SPA317 / SPA442  Week 9  The Clustering Loop, step by step.
 
 An interactive visualiser for the loop at the heart of ISODATA. Students place
-centres, then step through the two moves one at a time:
+the centres (at random, by clicking, or by typing coordinates), then step through
+the two moves one at a time:
   1. Assign  every point to its nearest centre  (nearest centre wins)
   2. Update  each centre to the middle of its points
 and repeat until nothing changes (convergence). An ISODATA mode adds the split
 and merge moves, so the number of clusters adjusts itself.
 
 Run it with:   streamlit run Week9_kmeans_game.py
+
+Clicking to place centres needs one extra package:
+   pip install streamlit-image-coordinates
+Without it, "Click to place" is hidden but "Type coordinates" still works.
 """
 import numpy as np
 import matplotlib
@@ -20,7 +25,6 @@ PAPER = "#fbfaf7"; INK = "#1a1a1a"; GREY = "#9aa0a8"
 WATER = "#1d4e89"; FOREST = "#2e7d32"; PASTURE = "#7cb342"; BARE = "#e08a1e"
 CLASS_COLS = [WATER, FOREST, PASTURE, BARE]
 CLASS_NAMES = ["water", "forest", "pasture and crop", "bare and built"]
-# distinct colours for arbitrary clusters
 CLUSTER_COLS = [WATER, FOREST, BARE, "#7b3fa0", PASTURE, "#c0392b", "#00838f",
                 "#8d6e63", "#d81b60", "#3949ab", "#f9a825", "#546e7a",
                 "#26a69a", "#ad1457", "#5d4037", "#1565c0"]
@@ -29,35 +33,34 @@ CLUSTER_COLS = [WATER, FOREST, BARE, "#7b3fa0", PASTURE, "#c0392b", "#00838f",
 # Pure clustering logic (no Streamlit here, so it can be tested on its own)
 # ============================================================================
 def make_points(dataset, n, seed):
-    """Return (X, truth): n points in 2D and their true-cover labels."""
+    """Return (X, truth, axes): n points in 2D, their true-cover labels, and axis info."""
     rng = np.random.default_rng(seed)
     if dataset == "Coffs feature space (4 covers)":
-        specs = [((0.06, 0.09), (0.020, 0.020)),   # water
-                 ((0.12, 0.42), (0.030, 0.055)),   # forest
-                 ((0.30, 0.34), (0.045, 0.040)),   # pasture and crop
-                 ((0.40, 0.16), (0.038, 0.032))]   # bare and built
-        xlab, ylab, lim = "Red", "NIR", (0, 0.50)
+        specs = [((0.06, 0.09), (0.020, 0.020)),
+                 ((0.12, 0.42), (0.030, 0.055)),
+                 ((0.30, 0.34), (0.045, 0.040)),
+                 ((0.40, 0.16), (0.038, 0.032))]
+        xlab, ylab, lim = "Red", "NIR", (0.0, 0.50)
     elif dataset == "Three clean blobs":
         specs = [((0.22, 0.24), (0.045, 0.045)),
                  ((0.32, 0.72), (0.050, 0.050)),
                  ((0.72, 0.40), (0.055, 0.055))]
-        xlab, ylab, lim = "feature 1", "feature 2", (0, 0.95)
+        xlab, ylab, lim = "feature 1", "feature 2", (0.0, 0.95)
     else:  # Overlapping / tricky
-        specs = [((0.35, 0.45), (0.11, 0.030)),    # elongated
-                 ((0.45, 0.62), (0.055, 0.055)),   # overlaps the next
+        specs = [((0.35, 0.45), (0.11, 0.030)),
+                 ((0.45, 0.62), (0.055, 0.055)),
                  ((0.55, 0.60), (0.055, 0.055)),
                  ((0.72, 0.28), (0.050, 0.050))]
-        xlab, ylab, lim = "feature 1", "feature 2", (0, 1.0)
+        xlab, ylab, lim = "feature 1", "feature 2", (0.0, 1.0)
     per = max(1, n // len(specs))
     X, truth = [], []
     for k, ((cx, cy), (sx, sy)) in enumerate(specs):
-        pts = np.column_stack([rng.normal(cx, sx, per), rng.normal(cy, sy, per)])
-        X.append(pts); truth += [k] * per
+        X.append(np.column_stack([rng.normal(cx, sx, per), rng.normal(cy, sy, per)]))
+        truth += [k] * per
     X = np.clip(np.vstack(X), lim[0], lim[1])
     return X, np.array(truth), (xlab, ylab, lim)
 
 def init_centres(X, k, seed):
-    """k-means++ style seeding: spread the initial centres out a little."""
     rng = np.random.default_rng(seed + 999)
     idx = [rng.integers(len(X))]
     for _ in range(1, k):
@@ -80,11 +83,16 @@ def update(X, labels, centres):
 def inertia(X, labels, centres):
     return float(sum(((X[labels == j] - centres[j]) ** 2).sum() for j in range(len(centres))))
 
+def pixel_to_data(px, py, w, h, lim):
+    """Map a click at image pixel (px, py) to data coordinates for a full-bleed square axes."""
+    lo, hi = lim
+    x = lo + (px / w) * (hi - lo)
+    y = hi - (py / h) * (hi - lo)   # image y runs downward, data y upward
+    return float(np.clip(x, lo, hi)), float(np.clip(y, lo, hi))
+
 def isodata_ops(X, labels, centres, split_std, merge_dist, kmax, kmin):
-    """One optional merge and one optional split per call. Returns (centres, events)."""
     events = []
     c = centres.copy()
-    # ---- merge the closest pair, if too close ----
     if len(c) > kmin:
         dif = c[:, None, :] - c[None, :, :]
         dist = np.sqrt((dif ** 2).sum(2))
@@ -93,9 +101,8 @@ def isodata_ops(X, labels, centres, split_std, merge_dist, kmax, kmin):
         if dist[i, j] < merge_dist:
             mid = (c[i] + c[j]) / 2.0
             c = np.array([c[m] for m in range(len(c)) if m not in (i, j)] + [mid])
-            events.append(("merge", f"clusters {i} and {j} were too close, merged into one"))
+            events.append(("merge", f"two centres were too close, merged into one"))
             return c, events
-    # ---- split the most spread-out cluster, if too loose ----
     if len(c) < kmax:
         spreads = []
         for j in range(len(c)):
@@ -107,7 +114,7 @@ def isodata_ops(X, labels, centres, split_std, merge_dist, kmax, kmin):
             u, s, vt = np.linalg.svd(pts - pts.mean(0), full_matrices=False)
             axis = vt[0]; off = axis * spreads[j]
             c = np.array([c[m] for m in range(len(c)) if m != j] + [c[j] + off, c[j] - off])
-            events.append(("split", f"cluster {j} was too spread out, split into two"))
+            events.append(("split", f"one cluster was too spread out, split into two"))
     return c, events
 
 
@@ -116,6 +123,12 @@ def isodata_ops(X, labels, centres, split_std, merge_dist, kmax, kmin):
 # ============================================================================
 def run_app():
     import streamlit as st
+    from io import BytesIO
+    try:
+        from streamlit_image_coordinates import streamlit_image_coordinates
+        HAVE_CLICK = True
+    except Exception:
+        HAVE_CLICK = False
 
     st.set_page_config(page_title="Week 9  The Clustering Loop", layout="wide")
     st.markdown(
@@ -124,45 +137,80 @@ def run_app():
         "Place the centres, then step through <b>assign</b> and <b>update</b> until nothing changes.</p>",
         unsafe_allow_html=True)
 
-    # ---- sidebar controls ----
+    S = st.session_state
+
+    def run_started():
+        return S.get("it", 0) > 0 or S.get("labels") is not None
+
+    def reset_run(centres):
+        S["centres"] = np.asarray(centres, dtype=float).reshape(-1, 2)
+        S.update(labels=None, last_assign=None, it=0, nxt="assign",
+                 converged=False, events=[],
+                 log="Centres ready. Press **1. Assign** to start.")
+
+    # ---- sidebar ----
     sb = st.sidebar
     sb.header("Setup")
     dataset = sb.selectbox("Dataset", [
         "Coffs feature space (4 covers)", "Three clean blobs", "Overlapping / tricky"])
     n = sb.slider("Number of points", 60, 400, 160, step=20)
-    k = sb.slider("Number of clusters (K)", 2, 10, 4,
-                  help="Ask for more clusters than covers to see over-clustering, fewer to see under-clustering.")
+    starts = ["Random"] + (["Click to place"] if HAVE_CLICK else []) + ["Type coordinates"]
+    centre_start = sb.radio("Centre start", starts,
+                            help="Let the machine drop the centres, or place them yourself.")
+    manual = centre_start != "Random"
+    if not manual:
+        k = sb.slider("Number of clusters (K)", 2, 10, 4,
+                      help="Ask for more clusters than covers to see over-clustering, fewer for under.")
+    else:
+        k = None
+        sb.caption("You choose the centres. K is however many you place. Place at least 2.")
+        if centre_start == "Click to place" and not HAVE_CLICK:
+            sb.warning("Run 'pip install streamlit-image-coordinates' to enable clicking.")
     mode = sb.radio("Mode", ["K-means", "ISODATA (split and merge)"])
     if mode.startswith("ISODATA"):
         split_std = sb.slider("Split if spread above", 0.03, 0.20, 0.09, step=0.01)
         merge_dist = sb.slider("Merge if centres closer than", 0.03, 0.25, 0.10, step=0.01)
-        kmax = sb.slider("Max clusters", k, 16, max(k + 4, 10))
+        kmax = sb.slider("Max clusters", 2, 16, 12)
     else:
-        split_std, merge_dist, kmax = 1e9, 0.0, k
-    colour_by = sb.radio("Colour points by", ["current cluster", "true cover"], horizontal=False)
+        split_std, merge_dist, kmax = 1e9, 0.0, 99
+    colour_by = sb.radio("Colour points by", ["current cluster", "true cover"])
     show_regions = sb.checkbox("Shade decision regions", value=True)
     seed = sb.number_input("Seed", 0, 9999, 7, step=1)
-    if sb.button("New random start"):
-        st.session_state.nonce = st.session_state.get("nonce", 0) + 1
-    nonce = st.session_state.get("nonce", 0)
+    if sb.button("New random layout"):
+        S["nonce"] = S.get("nonce", 0) + 1
+        S.pop("pkey", None)
+    nonce = S.get("nonce", 0)
 
-    # ---- (re)initialise the run when the setup changes ----
-    sig = (dataset, n, k, int(seed), nonce, mode)
-    if st.session_state.get("sig") != sig:
+    # ---- regenerate points when the layout changes ----
+    pkey = (dataset, n, int(seed), nonce)
+    if S.get("pkey") != pkey:
         X, truth, axes = make_points(dataset, n, int(seed) + nonce)
-        centres = init_centres(X, k, int(seed) + nonce)
-        st.session_state.update(
-            sig=sig, X=X, truth=truth, axes=axes, centres=centres,
-            labels=None, last_assign=None, it=0, nxt="assign",
-            converged=False, events=[],
-            log="Centres placed at random. Press **1. Assign** to start.")
-
-    S = st.session_state
+        S.update(pkey=pkey, X=X, truth=truth, axes=axes, placed=[], last_click=None)
+        S.pop("cfg", None)
     X, truth, axes = S["X"], S["truth"], S["axes"]
+    xlab, ylab, lim = axes
+
+    # ---- decide the initial centres ----
+    if not manual:
+        cfg = (pkey, "rand", k, int(S.get("reseed", 0)))
+        if S.get("cfg") != cfg:
+            S["cfg"] = cfg
+            reset_run(init_centres(X, k, int(seed) + nonce + int(S.get("reseed", 0))))
+    else:
+        # manual: while the run has not started, keep centres synced to placement
+        placed = S.get("placed", [])
+        if not run_started():
+            cfg = (pkey, centre_start, tuple(map(tuple, placed)))
+            if S.get("cfg") != cfg:
+                S["cfg"] = cfg
+                reset_run(np.array(placed, dtype=float) if placed else np.zeros((0, 2)))
+
+    centres = S["centres"]
+    can_step = len(centres) >= 2
 
     # ---- the step engine ----
     def step():
-        if S["converged"]:
+        if S["converged"] or len(S["centres"]) < 2:
             return
         if S["nxt"] == "assign":
             labels = assign(X, S["centres"])
@@ -171,11 +219,9 @@ def run_app():
                 S["log"] = "**Converged.** No point changed group, so no centre will move."
             else:
                 changed = int((labels != S["last_assign"]).sum()) if S["last_assign"] is not None else len(X)
-                S["labels"] = labels
-                S["nxt"] = "update"
-                S["events"] = []
-                S["log"] = f"**Assign.** Every point took its nearest centre. {changed} points changed group."
-        else:  # update
+                S.update(labels=labels, nxt="update", events=[],
+                         log=f"**Assign.** Every point took its nearest centre. {changed} points changed group.")
+        else:
             new_c = update(X, S["labels"], S["centres"])
             note = "**Update.** Each centre moved to the middle of its points."
             S["events"] = []
@@ -184,84 +230,148 @@ def run_app():
                 S["events"] = ev
                 for kind, msg in ev:
                     note += f"  \n**{kind.upper()}:** {msg}."
-            S["centres"] = new_c
-            S["last_assign"] = S["labels"]
-            S["it"] += 1
-            S["nxt"] = "assign"
-            S["log"] = note
+            S.update(centres=new_c, last_assign=S["labels"], it=S["it"] + 1, nxt="assign", log=note)
 
     # ---- controls ----
-    c1, c2, c3, c4 = st.columns([1.3, 1.3, 1.2, 1])
-    nxt_label = "1. Assign" if S["nxt"] == "assign" else "2. Update"
-    if c1.button(f"Next step  ({nxt_label})", type="primary", disabled=S["converged"], use_container_width=True):
+    # NB: keep button LABELS constant (with stable keys). A changing label makes
+    # Streamlit treat it as a new widget and drop every other click.
+    c1, c2, c3, c4 = st.columns([1.4, 1.3, 1.2, 1])
+    if c1.button("Next step", key="btn_next", type="primary",
+                 disabled=S["converged"] or not can_step, use_container_width=True):
         step()
-    if c2.button("Run to convergence", disabled=S["converged"], use_container_width=True):
+    if c2.button("Run to convergence", key="btn_run",
+                 disabled=S["converged"] or not can_step, use_container_width=True):
         for _ in range(200):
             step()
             if S["converged"]:
                 break
-    if c3.button("Re-seed centres", use_container_width=True):
-        S["centres"] = init_centres(X, k, int(seed) + nonce + S["it"] + 1)
-        S.update(labels=None, last_assign=None, it=0, nxt="assign", converged=False,
-                 events=[], log="Centres re-seeded. Press **1. Assign**.")
-    if c4.button("Reset", use_container_width=True):
-        st.session_state.pop("sig", None)
+    if c3.button("Re-seed centres", key="btn_reseed", disabled=manual, use_container_width=True,
+                 help="Random mode only. In manual mode use Clear and place again."):
+        S["reseed"] = int(S.get("reseed", 0)) + 1
+        S.pop("cfg", None)
+    if c4.button("Reset", key="btn_reset", use_container_width=True):
+        for key in ["pkey", "cfg"]:
+            S.pop(key, None)
+        S["placed"] = []
         st.rerun()
+
+    if S["converged"]:
+        st.caption("Converged. Press Reset to start again.")
+    elif manual and not can_step:
+        st.info("Place at least 2 centres to start stepping.")
+    else:
+        nxt_word = "Assign (points take their nearest centre)" if S["nxt"] == "assign" \
+            else "Update (centres move to the middle of their points)"
+        st.caption(f"Next step will: **{nxt_word}**.")
 
     # ---- metrics ----
     labels = S["labels"]
-    inr = inertia(X, labels, S["centres"]) if labels is not None else float("nan")
+    inr = inertia(X, labels, S["centres"]) if labels is not None and len(S["centres"]) else float("nan")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Iteration", S["it"])
     m2.metric("Clusters", len(S["centres"]))
     m3.metric("Next move", "Assign" if S["nxt"] == "assign" else "Update")
     m4.metric("Inertia (spread)", "n/a" if labels is None else f"{inr:.3f}")
 
-    # ---- the plot ----
-    xlab, ylab, lim = axes
-    fig, ax = plt.subplots(figsize=(7.2, 6.4))
-    fig.patch.set_facecolor(PAPER); ax.set_facecolor("white")
-    centres = S["centres"]
-    if show_regions and len(centres):
-        gx, gy = np.meshgrid(np.linspace(*lim, 300), np.linspace(*lim, 300))
-        G = np.c_[gx.ravel(), gy.ravel()]
-        reg = assign(G, centres).reshape(gx.shape)
-        cmap = matplotlib.colors.ListedColormap([CLUSTER_COLS[j % len(CLUSTER_COLS)] for j in range(len(centres))])
-        ax.imshow(reg, extent=[lim[0], lim[1], lim[0], lim[1]], origin="lower",
-                  cmap=cmap, alpha=0.12, aspect="auto", zorder=0,
-                  vmin=0, vmax=max(len(centres) - 1, 1))
-    if colour_by == "true cover" and dataset.startswith("Coffs"):
-        for kk in range(4):
-            m = truth == kk
-            ax.scatter(X[m, 0], X[m, 1], s=20, color=CLASS_COLS[kk], edgecolor="white",
-                       linewidth=0.4, alpha=0.9, zorder=3, label=CLASS_NAMES[kk])
-        ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
-    elif labels is None:
-        ax.scatter(X[:, 0], X[:, 1], s=20, color=GREY, edgecolor="white", linewidth=0.4, alpha=0.85, zorder=3)
-    else:
-        for j in range(len(centres)):
-            m = labels == j
-            ax.scatter(X[m, 0], X[m, 1], s=20, color=CLUSTER_COLS[j % len(CLUSTER_COLS)],
-                       edgecolor="white", linewidth=0.4, alpha=0.9, zorder=3)
-    for j in range(len(centres)):
-        ax.scatter([centres[j, 0]], [centres[j, 1]], s=320, marker="X",
-                   color=CLUSTER_COLS[j % len(CLUSTER_COLS)], edgecolor=INK, linewidth=1.7, zorder=6)
-    for kind, _ in S["events"]:
-        ax.text(0.5, 1.02, kind.upper(), transform=ax.transAxes, ha="center", va="bottom",
-                fontsize=13, fontweight="bold", color=(FOREST if kind == "split" else BARE))
-    title = ("Centres placed. Next: assign." if labels is None else
-             ("Converged." if S["converged"] else
-              ("Assigned. Next: update the centres." if S["nxt"] == "update"
-               else "Centres moved. Next: re-assign.")))
-    ax.set_title(title, fontsize=12, color=INK, fontweight="bold", pad=8)
-    ax.set_xlim(*lim); ax.set_ylim(*lim)
-    ax.set_xlabel(xlab, color=INK); ax.set_ylabel(ylab, color=INK)
-    ax.set_xticks([]); ax.set_yticks([])
-    for s in ax.spines.values():
-        s.set_color("#ddd")
-
     left, right = st.columns([1.5, 1])
-    left.pyplot(fig)
+
+    # ---- placement pad (click mode, during setup) OR the styled plot ----
+    placing_by_click = manual and centre_start == "Click to place" and HAVE_CLICK and not run_started()
+
+    if placing_by_click:
+        W = 460
+        figp = plt.figure(figsize=(W / 100, W / 100), dpi=100)
+        axp = figp.add_axes([0, 0, 1, 1]); axp.set_xlim(*lim); axp.set_ylim(*lim); axp.axis("off")
+        axp.set_facecolor("white")
+        if show_regions and len(centres):
+            gx, gy = np.meshgrid(np.linspace(*lim, 250), np.linspace(*lim, 250))
+            reg = assign(np.c_[gx.ravel(), gy.ravel()], centres).reshape(gx.shape)
+            cmap = matplotlib.colors.ListedColormap([CLUSTER_COLS[j % len(CLUSTER_COLS)] for j in range(len(centres))])
+            axp.imshow(reg, extent=[lim[0], lim[1], lim[0], lim[1]], origin="lower",
+                       cmap=cmap, alpha=0.12, aspect="auto", vmin=0, vmax=max(len(centres) - 1, 1))
+        axp.scatter(X[:, 0], X[:, 1], s=18, color=GREY, edgecolor="white", linewidth=0.4, alpha=0.85)
+        for i, (cx, cy) in enumerate(centres):
+            axp.scatter([cx], [cy], s=300, marker="X", color=CLUSTER_COLS[i % len(CLUSTER_COLS)],
+                        edgecolor=INK, linewidth=1.7)
+        buf = BytesIO(); figp.savefig(buf, format="png", facecolor="white"); plt.close(figp)
+        from PIL import Image
+        buf.seek(0); pad_img = Image.open(buf)
+        with left:
+            st.markdown(f"**Click in the box to drop a centre.**  ({len(centres)} placed)")
+            coords = streamlit_image_coordinates(pad_img, width=W, key="pad")
+            st.caption(f"Axes: {xlab} across, {ylab} up. Place at least 2, then press Next step.")
+            if st.button("Clear centres"):
+                S["placed"] = []; S["last_click"] = None; S.pop("cfg", None); st.rerun()
+        if coords is not None and coords != S.get("last_click"):
+            S["last_click"] = coords
+            dx, dy = pixel_to_data(coords["x"], coords["y"], W, W, lim)
+            S["placed"] = S.get("placed", []) + [[dx, dy]]
+            S.pop("cfg", None)
+            st.rerun()
+    else:
+        # ---- the styled plot ----
+        fig, ax = plt.subplots(figsize=(7.0, 6.2))
+        fig.patch.set_facecolor(PAPER); ax.set_facecolor("white")
+        if show_regions and len(centres):
+            gx, gy = np.meshgrid(np.linspace(*lim, 300), np.linspace(*lim, 300))
+            reg = assign(np.c_[gx.ravel(), gy.ravel()], centres).reshape(gx.shape)
+            cmap = matplotlib.colors.ListedColormap([CLUSTER_COLS[j % len(CLUSTER_COLS)] for j in range(len(centres))])
+            ax.imshow(reg, extent=[lim[0], lim[1], lim[0], lim[1]], origin="lower",
+                      cmap=cmap, alpha=0.12, aspect="auto", zorder=0, vmin=0, vmax=max(len(centres) - 1, 1))
+        if colour_by == "true cover" and dataset.startswith("Coffs"):
+            for kk in range(4):
+                m = truth == kk
+                ax.scatter(X[m, 0], X[m, 1], s=20, color=CLASS_COLS[kk], edgecolor="white",
+                           linewidth=0.4, alpha=0.9, zorder=3, label=CLASS_NAMES[kk])
+            ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+        elif labels is None:
+            ax.scatter(X[:, 0], X[:, 1], s=20, color=GREY, edgecolor="white", linewidth=0.4, alpha=0.85, zorder=3)
+        else:
+            for j in range(len(centres)):
+                m = labels == j
+                ax.scatter(X[m, 0], X[m, 1], s=20, color=CLUSTER_COLS[j % len(CLUSTER_COLS)],
+                           edgecolor="white", linewidth=0.4, alpha=0.9, zorder=3)
+        for j in range(len(centres)):
+            ax.scatter([centres[j, 0]], [centres[j, 1]], s=320, marker="X",
+                       color=CLUSTER_COLS[j % len(CLUSTER_COLS)], edgecolor=INK, linewidth=1.7, zorder=6)
+        for kind, _ in S["events"]:
+            ax.text(0.5, 1.02, kind.upper(), transform=ax.transAxes, ha="center", va="bottom",
+                    fontsize=13, fontweight="bold", color=(FOREST if kind == "split" else BARE))
+        if len(centres) < 2:
+            title = "Place at least 2 centres."
+        elif labels is None:
+            title = "Centres placed. Next: assign."
+        elif S["converged"]:
+            title = "Converged."
+        elif S["nxt"] == "update":
+            title = "Assigned. Next: update the centres."
+        else:
+            title = "Centres moved. Next: re-assign."
+        ax.set_title(title, fontsize=12, color=INK, fontweight="bold", pad=8)
+        ax.set_xlim(*lim); ax.set_ylim(*lim)
+        ax.set_xlabel(xlab, color=INK); ax.set_ylabel(ylab, color=INK)
+        ax.set_xticks([]); ax.set_yticks([])
+        for s in ax.spines.values():
+            s.set_color("#ddd")
+        left.pyplot(fig)
+        plt.close(fig)
+
+    # ---- type-coordinates editor (manual, during setup) ----
+    if manual and centre_start == "Type coordinates" and not run_started():
+        import pandas as pd
+        with right:
+            st.markdown("### Type the centres")
+            st.caption(f"One row per centre. {xlab} (x) and {ylab} (y) in the range "
+                       f"{lim[0]:.2f} to {lim[1]:.2f}. Add or delete rows to change how many.")
+            default = S.get("placed") or [[lim[1] * 0.3, lim[1] * 0.3], [lim[1] * 0.6, lim[1] * 0.6]]
+            df = pd.DataFrame(default, columns=["x", "y"])
+            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="coord_editor")
+            new_placed = [[float(np.clip(r.x, *lim)), float(np.clip(r.y, *lim))]
+                          for r in edited.itertuples() if pd.notna(r.x) and pd.notna(r.y)]
+            if new_placed != S.get("placed"):
+                S["placed"] = new_placed; S.pop("cfg", None); st.rerun()
+
+    # ---- explanation panel ----
     with right:
         st.markdown("### What just happened")
         st.info(S["log"])
@@ -270,7 +380,7 @@ def run_app():
                        "Now the analyst names the groups, which is the labelling step.")
         st.markdown("### The loop")
         st.markdown(
-            "1. **Place centres** at random.\n"
+            "1. **Place centres** (random, click, or type).\n"
             "2. **Assign** every point to its nearest centre.\n"
             "3. **Update** each centre to the middle of its points.\n"
             "4. **Repeat** until nothing changes.")
@@ -278,15 +388,9 @@ def run_app():
             st.markdown(
                 "**ISODATA** adds two moves between rounds:\n"
                 "- **Split** a cluster that is too spread out.\n"
-                "- **Merge** two clusters that are too close.\n"
-                "so the number of clusters adjusts itself.")
-        st.caption("Try it: set K above or below the number of covers to see over and "
-                   "under-clustering. In ISODATA mode, start K high (say 8 on the Coffs "
-                   "data) and watch it merge down to the natural number, or start low and "
-                   "watch it split up. Switch to 'true cover' colouring to compare the "
-                   "clusters against what the covers really are.")
-
-    plt.close(fig)
+                "- **Merge** two clusters that are too close.")
+        st.caption("Try it: place the centres badly on purpose and watch the loop still find the groups, "
+                   "set K above or below the number of covers, or turn on ISODATA and watch the count settle.")
 
 
 if __name__ == "__main__":
