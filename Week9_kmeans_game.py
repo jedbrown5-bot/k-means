@@ -121,6 +121,53 @@ def isodata_ops(X, labels, centres, split_std, merge_dist, kmax, kmin):
 
 
 # ============================================================================
+# Cursor coordinate readout: render the figure as an image with a small JS layer
+# that maps the cursor position to feature-space coordinates (a live hover read,
+# not a pixel read). Kept out of run_app so the coordinate maths can be tested.
+# ============================================================================
+def cursor_readout_html(fig, ax, lim, xlab, ylab, disp_w=640):
+    import base64
+    from io import BytesIO
+    fig.canvas.draw()                        # needed before the axes has a pixel box
+    fw, fh = fig.canvas.get_width_height()   # full canvas size in px
+    bb = ax.get_window_extent()              # data-area rectangle, origin bottom-left
+    L, R = float(bb.x0), float(bb.x1)
+    T, B = float(fh - bb.y1), float(fh - bb.y0)   # convert to top-origin (image) px
+    buf = BytesIO(); fig.savefig(buf, format="png", dpi=fig.dpi, facecolor=fig.get_facecolor())
+    buf.seek(0); b64 = base64.b64encode(buf.read()).decode()
+    x0, x1 = lim; y0, y1 = lim
+    disp_h = disp_w * fh / fw
+    html = f"""
+<div style="position:relative;width:{disp_w}px;max-width:100%;font-family:sans-serif">
+  <img id="pl" src="data:image/png;base64,{b64}" style="width:{disp_w}px;max-width:100%;display:block"/>
+  <div id="ro" style="position:absolute;top:10px;right:10px;background:rgba(255,255,255,0.92);
+     border:1px solid #cfd3d8;border-radius:6px;padding:3px 8px;font-size:12px;color:#1a1a1a;
+     pointer-events:none;display:none;white-space:nowrap;font-weight:bold"></div>
+</div>
+<script>
+(function(){{
+  var img=document.getElementById('pl'), ro=document.getElementById('ro');
+  var NW={fw}, NH={fh}, L={L}, R={R}, T={T}, B={B};
+  var X0={x0}, X1={x1}, Y0={y0}, Y1={y1};
+  function move(e){{
+    var rect=img.getBoundingClientRect();
+    var px=(e.clientX-rect.left)*(NW/rect.width);
+    var py=(e.clientY-rect.top)*(NH/rect.height);
+    if(px<L||px>R||py<T||py>B){{ro.style.display='none';return;}}
+    var fx=(px-L)/(R-L), fy=(py-T)/(B-T);
+    var dx=X0+fx*(X1-X0), dy=Y1-fy*(Y1-Y0);
+    ro.textContent='{xlab} '+dx.toFixed(3)+'    {ylab} '+dy.toFixed(3);
+    ro.style.display='block';
+  }}
+  img.addEventListener('mousemove',move);
+  img.addEventListener('mouseleave',function(){{ro.style.display='none';}});
+}})();
+</script>
+"""
+    return html, int(disp_h) + 12
+
+
+# ============================================================================
 # Streamlit app
 # ============================================================================
 def run_app():
@@ -183,6 +230,12 @@ def run_app():
     show_moves = sb.checkbox("Show centre-move arrows", value=True,
                              help="On Update, ghost the old centre and draw an arrow to the new one, "
                                   "which is the average position of the points assigned to it.")
+    show_numbers = sb.checkbox("Number the clusters", value=True,
+                               help="Put each cluster's number on its centre, so you can tell the "
+                                    "clusters apart. The numbers match the Centres table on the right.")
+    show_coords = sb.checkbox("Show cursor coordinates", value=False,
+                              help="Read the feature-space coordinates under your cursor as you move "
+                                   "over the plot. The reading is the position on the two axes, not a pixel.")
     seed = sb.number_input("Seed", 0, 9999, 7, step=1)
     if sb.button("New random layout"):
         S["nonce"] = S.get("nonce", 0) + 1
@@ -361,6 +414,13 @@ def run_app():
         for j in range(len(centres)):
             ax.scatter([centres[j, 0]], [centres[j, 1]], s=320, marker="X",
                        color=CLUSTER_COLS[j % len(CLUSTER_COLS)], edgecolor=INK, linewidth=1.7, zorder=6)
+        # cluster numbers: a small badge by each centre, matching the Centres table.
+        if show_numbers:
+            for j in range(len(centres)):
+                ax.annotate(str(j), (centres[j, 0], centres[j, 1]), textcoords="offset points",
+                            xytext=(9, 9), ha="left", va="bottom", fontsize=10, fontweight="bold",
+                            color=CLUSTER_COLS[j % len(CLUSTER_COLS)], zorder=8,
+                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec=INK, lw=0.8))
         # centre-move arrows: ghost the old centre and point to the new average
         mf = S.get("moved_from")
         if show_moves and mf is not None and len(mf) == len(centres):
@@ -391,7 +451,13 @@ def run_app():
         ax.set_xticks([]); ax.set_yticks([])
         for s in ax.spines.values():
             s.set_color("#ddd")
-        left.pyplot(fig)
+        if show_coords:
+            html, h = cursor_readout_html(fig, ax, lim, xlab, ylab)
+            with left:
+                st.components.v1.html(html, height=h)
+                st.caption("Move the cursor over the plot to read its position on the two axes.")
+        else:
+            left.pyplot(fig)
         plt.close(fig)
 
     # ---- type-coordinates editor (manual, during setup) ----

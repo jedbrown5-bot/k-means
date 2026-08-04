@@ -41,6 +41,8 @@ Placing the centres badly on purpose, then watching the loop still find the grou
 - Switch **Dataset** to "Overlapping / tricky" to show where plain K-means struggles.
 - Turn on **ISODATA (split and merge)**, start with K set high (say 8 on the Coffs data), and watch the cluster count merge its way down to the natural number.
 - Switch **Colour points by** to "true cover" (Coffs dataset) to compare the machine's clusters against the real covers, which is the labelling step.
+- Turn on **Number the clusters** to badge each centre with its number, matching the Centres table on the right, so you can point to "cluster 3" and everyone knows which one you mean.
+- Turn on **Show cursor coordinates** to read the feature-space position under the cursor as you move over the plot. The reading is the position on the two axes, so you can show where a water pixel or a bright bare-soil pixel actually sits.
 
 ## Files
 
