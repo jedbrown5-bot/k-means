@@ -483,19 +483,29 @@ def run_app():
             st.success("The clustering has settled. Every cluster is a spectral group. "
                        "Now the analyst names the groups, which is the labelling step.")
 
-        # live centres table: each centre is the average (mean x, mean y) of its points
+        # live table: the average of the points CURRENTLY assigned to each cluster.
+        # This runs a step ahead of the plotted centre. Straight after an Assign the
+        # marker is still at its old spot, but these are the averages it moves to on
+        # the next Update, so the table shows the destination before the centre gets there.
         if len(centres):
             import pandas as pd
-            counts = [int((labels == j).sum()) if labels is not None else 0 for j in range(len(centres))]
+            if labels is not None:
+                counts = [int((labels == j).sum()) for j in range(len(centres))]
+                means = np.array([X[labels == j].mean(0) if (labels == j).any() else centres[j]
+                                  for j in range(len(centres))])
+            else:
+                counts = [0] * len(centres)      # no points assigned yet
+                means = centres
             dfc = pd.DataFrame({
                 "cluster": list(range(len(centres))),
                 "points": counts,
-                "mean x": np.round(centres[:, 0], 3),
-                "mean y": np.round(centres[:, 1], 3)})
+                "mean x": np.round(means[:, 0], 3),
+                "mean y": np.round(means[:, 1], 3)})
             st.markdown("### Centres (the averages)")
             st.dataframe(dfc, hide_index=True, use_container_width=True)
-            st.caption("On Update, each centre becomes the mean x and mean y of the points assigned to it. "
-                       "Cluster numbers match the plot colours. Watch these numbers change each Update.")
+            st.caption("Each row is the average of the points currently assigned to that cluster, which is "
+                       "where its centre moves to on the next Update. After an Assign the marker still sits "
+                       "at the old spot, so these numbers run a step ahead of it. Cluster numbers match the plot.")
         st.markdown("### The loop")
         st.markdown(
             "1. **Place centres** (random, click, or type).\n"
