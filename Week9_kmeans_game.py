@@ -19,6 +19,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 
 # ---- house palette (matches the Week 9 lecture figures) --------------------
 PAPER = "#fbfaf7"; INK = "#1a1a1a"; GREY = "#9aa0a8"
@@ -61,13 +62,14 @@ def make_points(dataset, n, seed):
     return X, np.array(truth), (xlab, ylab, lim)
 
 def init_centres(X, k, seed):
+    """Random centres spread across the data's bounding box. Deliberately not
+    k-means++: on clean data that lands almost on the true means, so the centres
+    barely move. Spreading them out makes the update step visible, which is the
+    whole point of the game. Slightly inset so they start inside the cloud."""
     rng = np.random.default_rng(seed + 999)
-    idx = [rng.integers(len(X))]
-    for _ in range(1, k):
-        d = np.min([((X - X[i]) ** 2).sum(1) for i in idx], axis=0)
-        p = d / (d.sum() + 1e-12)
-        idx.append(rng.choice(len(X), p=p))
-    return X[idx].astype(float).copy()
+    lo, hi = X.min(0), X.max(0)
+    pad = (hi - lo) * 0.10
+    return rng.uniform(lo + pad, hi - pad, size=(k, 2))
 
 def assign(X, centres):
     return (((X[:, None, :] - centres[None, :, :]) ** 2).sum(2)).argmin(1)
@@ -145,7 +147,7 @@ def run_app():
     def reset_run(centres):
         S["centres"] = np.asarray(centres, dtype=float).reshape(-1, 2)
         S.update(labels=None, last_assign=None, it=0, nxt="assign",
-                 converged=False, events=[],
+                 converged=False, events=[], moved_from=None,
                  log="Centres ready. Press **1. Assign** to start.")
 
     # ---- sidebar ----
@@ -175,6 +177,12 @@ def run_app():
         split_std, merge_dist, kmax = 1e9, 0.0, 99
     colour_by = sb.radio("Colour points by", ["current cluster", "true cover"])
     show_regions = sb.checkbox("Shade decision regions", value=True)
+    show_lines = sb.checkbox("Show distance lines to centre", value=False,
+                             help="Draw a line from every point to its assigned centre. "
+                                  "Turn it on after Assign to see nearest centre wins, and the spread the centre must sit in.")
+    show_moves = sb.checkbox("Show centre-move arrows", value=True,
+                             help="On Update, ghost the old centre and draw an arrow to the new one, "
+                                  "which is the average position of the points assigned to it.")
     seed = sb.number_input("Seed", 0, 9999, 7, step=1)
     if sb.button("New random layout"):
         S["nonce"] = S.get("nonce", 0) + 1
@@ -214,6 +222,7 @@ def run_app():
             return
         if S["nxt"] == "assign":
             labels = assign(X, S["centres"])
+            S["moved_from"] = None   # clear any centre-move arrows once we re-assign
             if S["last_assign"] is not None and np.array_equal(labels, S["last_assign"]):
                 S["converged"] = True
                 S["log"] = "**Converged.** No point changed group, so no centre will move."
@@ -222,14 +231,18 @@ def run_app():
                 S.update(labels=labels, nxt="update", events=[],
                          log=f"**Assign.** Every point took its nearest centre. {changed} points changed group.")
         else:
+            old_c = S["centres"].copy()
             new_c = update(X, S["labels"], S["centres"])
-            note = "**Update.** Each centre moved to the middle of its points."
+            note = "**Update.** Each centre moved to the average of the points assigned to it."
             S["events"] = []
             if mode.startswith("ISODATA"):
                 new_c, ev = isodata_ops(X, S["labels"], new_c, split_std, merge_dist, kmax, 2)
                 S["events"] = ev
                 for kind, msg in ev:
                     note += f"  \n**{kind.upper()}:** {msg}."
+            # remember where each centre moved from, but only when the count is unchanged
+            # (a split or merge changes which centre is which, so the arrows would not line up)
+            S["moved_from"] = old_c if len(old_c) == len(new_c) and not S["events"] else None
             S.update(centres=new_c, last_assign=S["labels"], it=S["it"] + 1, nxt="assign", log=note)
 
     # ---- controls ----
@@ -265,6 +278,10 @@ def run_app():
         st.caption(f"Next step will: **{nxt_word}**.")
 
     # ---- metrics ----
+    # Re-read after step() ran (a click above may have moved the centres). Binding
+    # these before the step engine would leave the plot one move behind, which also
+    # collapses the centre-move arrows to zero length.
+    centres = S["centres"]
     labels = S["labels"]
     inr = inertia(X, labels, S["centres"]) if labels is not None and len(S["centres"]) else float("nan")
     m1, m2, m3, m4 = st.columns(4)
@@ -318,6 +335,12 @@ def run_app():
             cmap = matplotlib.colors.ListedColormap([CLUSTER_COLS[j % len(CLUSTER_COLS)] for j in range(len(centres))])
             ax.imshow(reg, extent=[lim[0], lim[1], lim[0], lim[1]], origin="lower",
                       cmap=cmap, alpha=0.12, aspect="auto", zorder=0, vmin=0, vmax=max(len(centres) - 1, 1))
+        # distance lines: a spoke from each point to its assigned centre (nearest centre wins).
+        # Guard: right after an ISODATA split/merge the labels can point past the new count.
+        if show_lines and labels is not None and len(centres) and int(labels.max()) < len(centres):
+            seg = np.stack([X, centres[labels]], axis=1)
+            lc_cols = [CLUSTER_COLS[int(j) % len(CLUSTER_COLS)] for j in labels]
+            ax.add_collection(LineCollection(seg, colors=lc_cols, linewidths=0.6, alpha=0.25, zorder=1))
         if colour_by == "true cover" and dataset.startswith("Coffs"):
             for kk in range(4):
                 m = truth == kk
@@ -331,9 +354,24 @@ def run_app():
                 m = labels == j
                 ax.scatter(X[m, 0], X[m, 1], s=20, color=CLUSTER_COLS[j % len(CLUSTER_COLS)],
                            edgecolor="white", linewidth=0.4, alpha=0.9, zorder=3)
+            stray = labels >= len(centres)   # only just after an ISODATA split/merge
+            if stray.any():
+                ax.scatter(X[stray, 0], X[stray, 1], s=20, color=GREY, edgecolor="white",
+                           linewidth=0.4, alpha=0.6, zorder=3)
         for j in range(len(centres)):
             ax.scatter([centres[j, 0]], [centres[j, 1]], s=320, marker="X",
                        color=CLUSTER_COLS[j % len(CLUSTER_COLS)], edgecolor=INK, linewidth=1.7, zorder=6)
+        # centre-move arrows: ghost the old centre and point to the new average
+        mf = S.get("moved_from")
+        if show_moves and mf is not None and len(mf) == len(centres):
+            for j in range(len(centres)):
+                ox, oy = mf[j]; nx, ny = centres[j]
+                ax.scatter([ox], [oy], s=300, marker="X", facecolor="none",
+                           edgecolor=GREY, linewidth=1.6, zorder=5)
+                if (ox - nx) ** 2 + (oy - ny) ** 2 > 1e-8:
+                    ax.annotate("", xy=(nx, ny), xytext=(ox, oy),
+                                arrowprops=dict(arrowstyle="-|>", color=INK, lw=1.6,
+                                                shrinkA=6, shrinkB=9), zorder=7)
         for kind, _ in S["events"]:
             ax.text(0.5, 1.02, kind.upper(), transform=ax.transAxes, ha="center", va="bottom",
                     fontsize=13, fontweight="bold", color=(FOREST if kind == "split" else BARE))
@@ -378,6 +416,20 @@ def run_app():
         if S["converged"]:
             st.success("The clustering has settled. Every cluster is a spectral group. "
                        "Now the analyst names the groups, which is the labelling step.")
+
+        # live centres table: each centre is the average (mean x, mean y) of its points
+        if len(centres):
+            import pandas as pd
+            counts = [int((labels == j).sum()) if labels is not None else 0 for j in range(len(centres))]
+            dfc = pd.DataFrame({
+                "cluster": list(range(len(centres))),
+                "points": counts,
+                "mean x": np.round(centres[:, 0], 3),
+                "mean y": np.round(centres[:, 1], 3)})
+            st.markdown("### Centres (the averages)")
+            st.dataframe(dfc, hide_index=True, use_container_width=True)
+            st.caption("On Update, each centre becomes the mean x and mean y of the points assigned to it. "
+                       "Cluster numbers match the plot colours. Watch these numbers change each Update.")
         st.markdown("### The loop")
         st.markdown(
             "1. **Place centres** (random, click, or type).\n"
